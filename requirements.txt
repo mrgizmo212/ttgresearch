@@ -2,7 +2,7 @@ requests
 python-dotenv
 fastapi
 uvicorn
-pydantic
+pydantic-core==2.20.1
 openai
 gpt-researcher
 datetime
