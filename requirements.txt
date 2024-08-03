@@ -8,3 +8,4 @@ gpt-researcher
 datetime
 argparse
 asyncio
+fastapi.security
