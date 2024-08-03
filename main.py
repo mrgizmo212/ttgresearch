@@ -10,7 +10,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, validator
 import uvicorn
 
 from gpt_researcher import GPTResearcher
