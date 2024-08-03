@@ -1,12 +1,9 @@
 import os
 import sys
-import requests
-import json
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from openai import OpenAI
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -32,10 +29,11 @@ API_KEY = os.getenv("API_KEY")
 class Query(BaseModel):
     query: str
     report_type: str = "research_report"
-    date: datetime | None = None
+    start_date: datetime | None = None
+    end_date: datetime | None = None
     sources: list[str] = []
 
-    @field_validator('date', mode='before')
+    @validator('start_date', 'end_date', pre=True)
     def parse_date(cls, value):
         if isinstance(value, str):
             try:
@@ -72,22 +70,21 @@ def get_referenced_date(query: str, current_date: datetime) -> datetime:
    
     return current_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
-async def get_report(query: str, report_type: str, sources: list, query_date: datetime = None) -> tuple:
+async def fetch_report(query: str, report_type: str, sources: list = [], start_date: datetime = None, end_date: datetime = None) -> tuple:
     start_time = time.time()
     
-    if query_date:
-        current_date = query_date
-    else:
-        current_date = get_current_time_et()
-   
-    referenced_date = get_referenced_date(query, current_date)
-   
-    date_context = f"As of {current_date.strftime('%A, %B %d, %Y %I:%M %p ET')}, "
-    if referenced_date.date() != current_date.date():
-        date_context += f"regarding {referenced_date.strftime('%A, %B %d, %Y')}, "
+    if not start_date:
+        start_date = get_current_time_et()
+    
+    if not end_date:
+        end_date = start_date
+    
+    date_range = f"from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
+    
+    date_context = f"Considering only information published {date_range}, "
     contextualized_query = date_context + query
 
-    researcher = GPTResearcher(query=contextualized_query, report_type=report_type, source_urls=sources)
+    researcher = GPTResearcher(query=contextualized_query, report_type=report_type, config_path=None)
     await researcher.conduct_research()
     report = await researcher.write_report()
     
@@ -104,18 +101,13 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security
 @app.post("/research")
 async def research(query: Query, api_key: str = Depends(verify_api_key)):
     print(f"Received query: {query}")
-    report, execution_time = await get_report(query.query, query.report_type, query.sources, query.date)
-    return {"report": report, "date": query.date, "execution_time": execution_time}
+    report, execution_time = await fetch_report(query.query, query.report_type, query.sources, query.start_date, query.end_date)
+    return {"report": report, "start_date": query.start_date, "end_date": query.end_date, "execution_time": execution_time}
 
 @app.post("/research_direct")
-async def research_direct(query: str, report_type: str = "research_report", sources: list = [], api_key: str = Depends(verify_api_key)):
-    start_time = time.time()
-    researcher = GPTResearcher(query=query, report_type=report_type, source_urls=sources)
-    await researcher.conduct_research()
-    report = await researcher.write_report()
-    end_time = time.time()
-    execution_time = end_time - start_time
-    return {"report": report, "execution_time": execution_time}
+async def research_direct(query: str, report_type: str = "research_report", sources: list = [], start_date: datetime = None, end_date: datetime = None, api_key: str = Depends(verify_api_key)):
+    report, execution_time = await fetch_report(query, report_type, sources, start_date, end_date)
+    return {"report": report, "start_date": start_date, "end_date": end_date, "execution_time": execution_time}
 
 def run_fastapi():
     parser = argparse.ArgumentParser()
@@ -124,21 +116,22 @@ def run_fastapi():
     args = parser.parse_args()
     uvicorn.run(app, host=args.host, port=args.port)
 
-def run_terminal():
+async def run_terminal():
     parser = argparse.ArgumentParser(description="GPT Researcher")
     parser.add_argument("query", type=str, help="Research query")
     parser.add_argument("--report_type", type=str, default="research_report", help="Type of report")
-    parser.add_argument("--date", type=lambda d: datetime.fromisoformat(d).replace(tzinfo=ZoneInfo("America/New_York")),
-                        help="Query date (YYYY-MM-DD HH:MM:SS in America/New_York)")
+    parser.add_argument("--start_date", type=lambda d: datetime.fromisoformat(d).replace(tzinfo=ZoneInfo("America/New_York")),
+                        help="Start date (YYYY-MM-DD HH:MM:SS in America/New_York)")
+    parser.add_argument("--end_date", type=lambda d: datetime.fromisoformat(d).replace(tzinfo=ZoneInfo("America/New_York")),
+                        help="End date (YYYY-MM-DD HH:MM:SS in America/New_York)")
     parser.add_argument("--sources", nargs='+', default=[], help="List of source URLs")
     args = parser.parse_args()
-    report, execution_time = asyncio.run(get_report(args.query, args.report_type, args.sources, args.date))
+    report, execution_time = await fetch_report(args.query, args.report_type, args.sources, args.start_date, args.end_date)
     print(f"Report:\n{report}")
     print(f"Execution time: {execution_time:.2f} seconds")
 
 if __name__ == "__main__":
-    import sys
     if len(sys.argv) > 1:
-        run_terminal()
+        asyncio.run(run_terminal())
     else:
         run_fastapi()
