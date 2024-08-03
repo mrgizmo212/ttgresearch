@@ -5,4 +5,6 @@ uvicorn
 pydantic
 openai
 gpt-researcher
-zoneinfo
+datetime
+argparse
+asyncio
