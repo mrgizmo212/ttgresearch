@@ -81,7 +81,7 @@ async def fetch_report(query: str, report_type: str, sources: list = [], start_d
     
     date_range = f"from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
     
-    date_context = f"Considering only information published {date_range}, "
+    date_context = f"Considering only information originally published {date_range} & nothing that mentions being updated, "
     contextualized_query = date_context + query
 
     researcher = GPTResearcher(query=contextualized_query, report_type=report_type, config_path=None)
