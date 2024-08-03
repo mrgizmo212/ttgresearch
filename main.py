@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo
 
 from openai import OpenAI
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, field_validator
 import uvicorn
 
@@ -21,6 +22,12 @@ load_dotenv()
 
 # Set up FastAPI app
 app = FastAPI()
+
+# Set up security
+security = HTTPBearer()
+
+# API key (in a real-world scenario, store this securely)
+API_KEY = os.getenv("API_KEY")
 
 class Query(BaseModel):
     query: str
@@ -89,14 +96,19 @@ async def get_report(query: str, report_type: str, sources: list, query_date: da
     
     return report, execution_time
 
+def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security)):
+    if credentials.credentials != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid API Key")
+    return credentials.credentials
+
 @app.post("/research")
-async def research(query: Query):
+async def research(query: Query, api_key: str = Depends(verify_api_key)):
     print(f"Received query: {query}")
     report, execution_time = await get_report(query.query, query.report_type, query.sources, query.date)
     return {"report": report, "date": query.date, "execution_time": execution_time}
 
 @app.post("/research_direct")
-async def research_direct(query: str, report_type: str = "research_report", sources: list = []):
+async def research_direct(query: str, report_type: str = "research_report", sources: list = [], api_key: str = Depends(verify_api_key)):
     start_time = time.time()
     researcher = GPTResearcher(query=query, report_type=report_type, source_urls=sources)
     await researcher.conduct_research()
