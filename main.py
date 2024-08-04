@@ -1,14 +1,13 @@
 import os
-import sys
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import asyncio
-import argparse
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, validator
 import uvicorn
 from starlette.responses import StreamingResponse
@@ -21,6 +20,15 @@ load_dotenv()
 # Set up FastAPI app
 app = FastAPI()
 
+# Set up CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins in development
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 # Set up security
 security = HTTPBearer()
 
@@ -32,7 +40,7 @@ class Query(BaseModel):
     report_type: str = "research_report"
     start_date: datetime | None = None
     end_date: datetime | None = None
-    sources: list[str] = []
+    sources: list[str] | None = None
 
     @validator('start_date', 'end_date', pre=True)
     def parse_date(cls, value):
@@ -40,10 +48,8 @@ class Query(BaseModel):
             try:
                 utc_time = datetime.fromisoformat(value.rstrip('Z')).replace(tzinfo=ZoneInfo("UTC"))
                 et_time = utc_time.astimezone(ZoneInfo("America/New_York"))
-                print(f"Original UTC time: {utc_time}, Converted ET time: {et_time}")
                 return et_time
             except ValueError as e:
-                print(f"Date parsing error: {e}")
                 raise ValueError("Invalid date format")
         return value
 
@@ -52,30 +58,11 @@ class Query(BaseModel):
             datetime: lambda v: v.isoformat()
         }
 
-def get_current_time_et():
-    return datetime.now(ZoneInfo("America/New_York"))
-
-def get_referenced_date(query: str, current_date: datetime) -> datetime:
-    days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-    query_lower = query.lower()
-   
-    for i, day in enumerate(days):
-        if day in query_lower:
-            days_diff = (current_date.weekday() - i) % 7
-            return (current_date - timedelta(days=days_diff)).replace(hour=0, minute=0, second=0, microsecond=0)
-   
-    if "yesterday" in query_lower:
-        return (current_date - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    elif "today" in query_lower:
-        return current_date.replace(hour=0, minute=0, second=0, microsecond=0)
-   
-    return current_date.replace(hour=0, minute=0, second=0, microsecond=0)
-
-async def fetch_report(query: str, report_type: str, sources: list = [], start_date: datetime = None, end_date: datetime = None):
+async def fetch_report(query: str, report_type: str, sources: list | None = None, start_date: datetime = None, end_date: datetime = None):
     start_time = time.time()
     
     if not start_date:
-        start_date = get_current_time_et()
+        start_date = datetime.now(ZoneInfo("America/New_York"))
     
     if not end_date:
         end_date = start_date
@@ -89,12 +76,12 @@ async def fetch_report(query: str, report_type: str, sources: list = [], start_d
     try:
         await researcher.conduct_research()
     except Exception as e:
-        print(f"Error during research: {e}")
+        yield f"Error during research: {str(e)}\n"
     
     try:
         report = await researcher.write_report()
     except Exception as e:
-        print(f"Error writing report: {e}")
+        yield f"Error writing report: {str(e)}\n"
         report = "Unable to generate full report due to an error. Partial results may be available."
     
     end_time = time.time()
@@ -110,36 +97,7 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security
 
 @app.post("/research")
 async def research(query: Query, api_key: str = Depends(verify_api_key)):
-    print(f"Received query: {query}")
     return StreamingResponse(fetch_report(query.query, query.report_type, query.sources, query.start_date, query.end_date))
 
-@app.post("/research_direct")
-async def research_direct(query: str, report_type: str = "research_report", sources: list = [], start_date: datetime = None, end_date: datetime = None, api_key: str = Depends(verify_api_key)):
-    return StreamingResponse(fetch_report(query, report_type, sources, start_date, end_date))
-
-def run_fastapi():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", default="127.0.0.1", help="Host to run the server on")
-    parser.add_argument("--port", type=int, default=8000, help="Port to run the server on")
-    args = parser.parse_args()
-    uvicorn.run(app, host=args.host, port=args.port)
-
-async def run_terminal():
-    parser = argparse.ArgumentParser(description="GPT Researcher")
-    parser.add_argument("query", type=str, help="Research query")
-    parser.add_argument("--report_type", type=str, default="research_report", help="Type of report")
-    parser.add_argument("--start_date", type=lambda d: datetime.fromisoformat(d).replace(tzinfo=ZoneInfo("America/New_York")),
-                        help="Start date (YYYY-MM-DD HH:MM:SS in America/New_York)")
-    parser.add_argument("--end_date", type=lambda d: datetime.fromisoformat(d).replace(tzinfo=ZoneInfo("America/New_York")),
-                        help="End date (YYYY-MM-DD HH:MM:SS in America/New_York)")
-    parser.add_argument("--sources", nargs='+', default=[], help="List of source URLs")
-    args = parser.parse_args()
-    
-    async for chunk in fetch_report(args.query, args.report_type, args.sources, args.start_date, args.end_date):
-        print(chunk, end='')
-
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        asyncio.run(run_terminal())
-    else:
-        run_fastapi()
+    uvicorn.run(app, host="0.0.0.0", port=8000)
