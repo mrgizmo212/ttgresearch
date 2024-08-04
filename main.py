@@ -3,16 +3,17 @@ import sys
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import asyncio
+import argparse
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, validator
 import uvicorn
+from starlette.responses import StreamingResponse
 
 from gpt_researcher import GPTResearcher
-import asyncio
-import argparse
 
 # Load environment variables
 load_dotenv()
@@ -70,7 +71,7 @@ def get_referenced_date(query: str, current_date: datetime) -> datetime:
    
     return current_date.replace(hour=0, minute=0, second=0, microsecond=0)
 
-async def fetch_report(query: str, report_type: str, sources: list = [], start_date: datetime = None, end_date: datetime = None) -> tuple:
+async def fetch_report(query: str, report_type: str, sources: list = [], start_date: datetime = None, end_date: datetime = None):
     start_time = time.time()
     
     if not start_date:
@@ -85,13 +86,22 @@ async def fetch_report(query: str, report_type: str, sources: list = [], start_d
     contextualized_query = date_context + query
 
     researcher = GPTResearcher(query=contextualized_query, report_type=report_type, config_path=None)
-    await researcher.conduct_research()
-    report = await researcher.write_report()
+    try:
+        await researcher.conduct_research()
+    except Exception as e:
+        print(f"Error during research: {e}")
+    
+    try:
+        report = await researcher.write_report()
+    except Exception as e:
+        print(f"Error writing report: {e}")
+        report = "Unable to generate full report due to an error. Partial results may be available."
     
     end_time = time.time()
     execution_time = end_time - start_time
     
-    return report, execution_time
+    yield f"Report:\n{report}\n"
+    yield f"Execution time: {execution_time:.2f} seconds\n"
 
 def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security)):
     if credentials.credentials != API_KEY:
@@ -101,13 +111,11 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security
 @app.post("/research")
 async def research(query: Query, api_key: str = Depends(verify_api_key)):
     print(f"Received query: {query}")
-    report, execution_time = await fetch_report(query.query, query.report_type, query.sources, query.start_date, query.end_date)
-    return {"report": report, "start_date": query.start_date, "end_date": query.end_date, "execution_time": execution_time}
+    return StreamingResponse(fetch_report(query.query, query.report_type, query.sources, query.start_date, query.end_date))
 
 @app.post("/research_direct")
 async def research_direct(query: str, report_type: str = "research_report", sources: list = [], start_date: datetime = None, end_date: datetime = None, api_key: str = Depends(verify_api_key)):
-    report, execution_time = await fetch_report(query, report_type, sources, start_date, end_date)
-    return {"report": report, "start_date": start_date, "end_date": end_date, "execution_time": execution_time}
+    return StreamingResponse(fetch_report(query, report_type, sources, start_date, end_date))
 
 def run_fastapi():
     parser = argparse.ArgumentParser()
@@ -126,9 +134,9 @@ async def run_terminal():
                         help="End date (YYYY-MM-DD HH:MM:SS in America/New_York)")
     parser.add_argument("--sources", nargs='+', default=[], help="List of source URLs")
     args = parser.parse_args()
-    report, execution_time = await fetch_report(args.query, args.report_type, args.sources, args.start_date, args.end_date)
-    print(f"Report:\n{report}")
-    print(f"Execution time: {execution_time:.2f} seconds")
+    
+    async for chunk in fetch_report(args.query, args.report_type, args.sources, args.start_date, args.end_date):
+        print(chunk, end='')
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
