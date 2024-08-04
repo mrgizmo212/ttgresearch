@@ -1,21 +1,26 @@
 import os
 import time
-from datetime import datetime, timedelta
+import traceback
+from datetime import datetime
 from zoneinfo import ZoneInfo
-import asyncio
+import logging
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi import FastAPI, HTTPException, Depends, Security, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, validator
 import uvicorn
-from starlette.responses import StreamingResponse
+from starlette.responses import StreamingResponse, JSONResponse
 
 from gpt_researcher import GPTResearcher
 
 # Load environment variables
 load_dotenv()
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Set up FastAPI app
 app = FastAPI()
@@ -50,7 +55,7 @@ class Query(BaseModel):
                 et_time = utc_time.astimezone(ZoneInfo("America/New_York"))
                 return et_time
             except ValueError as e:
-                raise ValueError("Invalid date format")
+                raise ValueError(f"Invalid date format: {str(e)}")
         return value
 
     class Config:
@@ -74,16 +79,25 @@ async def fetch_report(query: str, report_type: str, sources: list | None = None
 
     researcher = GPTResearcher(query=contextualized_query, report_type=report_type, config_path=None)
     try:
+        yield f"Starting research for query: {query}\n"
         await researcher.conduct_research()
     except Exception as e:
-        yield f"Error during research: {str(e)}\n"
-    
+        error_msg = f"Error during research: {str(e)}\n"
+        error_msg += f"Traceback: {traceback.format_exc()}\n"
+        logger.error(error_msg)
+        yield error_msg
+        return
+
     try:
+        yield "Writing report...\n"
         report = await researcher.write_report()
     except Exception as e:
-        yield f"Error writing report: {str(e)}\n"
+        error_msg = f"Error writing report: {str(e)}\n"
+        error_msg += f"Traceback: {traceback.format_exc()}\n"
+        logger.error(error_msg)
+        yield error_msg
         report = "Unable to generate full report due to an error. Partial results may be available."
-    
+
     end_time = time.time()
     execution_time = end_time - start_time
     
@@ -95,8 +109,19 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security
         raise HTTPException(status_code=401, detail="Invalid API Key")
     return credentials.credentials
 
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    error_msg = f"An unexpected error occurred: {str(exc)}\n"
+    error_msg += f"Traceback: {traceback.format_exc()}\n"
+    logger.error(error_msg)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected error occurred. Please check the server logs for more information."}
+    )
+
 @app.post("/research")
 async def research(query: Query, api_key: str = Depends(verify_api_key)):
+    logger.info(f"Received query: {query}")
     return StreamingResponse(fetch_report(query.query, query.report_type, query.sources, query.start_date, query.end_date))
 
 if __name__ == "__main__":
